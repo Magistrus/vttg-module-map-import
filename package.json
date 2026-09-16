@@ -1,0 +1,28 @@
+{
+  "name": "vttg-module-map-import",
+  "version": "0.1.0",
+  "description": "Импорт карт из редакторов карт (Dungeondraft и другие экспортёры Universal VTT) в Virtual TTG",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build",
+    "type-check": "vue-tsc --noEmit -p tsconfig.json",
+    "install:world": "node scripts/installToWorld.mjs",
+    "test": "vitest run",
+    "make:sample": "node scripts/makeSampleMap.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "25.3.5",
+    "@vitejs/plugin-vue": "6.0.4",
+    "happy-dom": "^20.14.5",
+    "typescript": "5.9.3",
+    "vite": "7.3.1",
+    "vitest": "4.1.10",
+    "vue": "3.5.29",
+    "vue-tsc": "3.3.5"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  }
+}

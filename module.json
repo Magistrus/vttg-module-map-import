@@ -1,0 +1,13 @@
+{
+  "id": "map-import",
+  "name": "Импорт карт",
+  "version": "0.1.0",
+  "description": "Импорт карт из Dungeondraft и других редакторов, экспортирующих Universal VTT (.dd2vtt / .uvtt): фон, стены, двери, окна и источники света одной сценой.",
+  "icon": "tabler:map-plus",
+  "author": "TTG Club",
+  "permissions": ["scene-write", "assets", "modals", "notifications", "settings"],
+  "client": {
+    "entry": "client.js",
+    "styles": ["styles.css"]
+  }
+}
