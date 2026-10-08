@@ -1,6 +1,6 @@
 {
   "name": "vttg-module-map-import",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Импорт карт из редакторов карт (Dungeondraft и другие экспортёры Universal VTT) в Virtual TTG",
   "type": "module",
   "private": true,

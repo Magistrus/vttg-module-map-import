@@ -11,9 +11,11 @@
   import type { UvttMap } from '@/uvtt/schema';
   import type { VttgModuleApi } from '@/types/vttg';
 
-  import { computed, onMounted, ref } from 'vue';
+  import { computed, ref } from 'vue';
+  import { z } from 'zod';
 
-  import { runImport } from '@/import/runImport';
+  import { BRIGHT_RATIO, runImport } from '@/import/runImport';
+  import { convertUvtt } from '@/uvtt/convert';
   import {
     isImageFileName,
     isUvttFileName,
@@ -28,8 +30,32 @@
     moduleId?: string;
   }>();
 
-  /** Ключ, под которым в БД мира лежат последние настройки импорта */
-  const SETTINGS_KEY = 'import-defaults';
+  /**
+   * Ключ, под которым в БД мира лежат запомненные настройки импорта.
+   *
+   * `v2` — с режимом «авто» для проёмов. Выбор, сохранённый прежней версией
+   * под старым ключом, сознательно не подхватывается: там у всех порталов был
+   * один тип, и однажды выбранные «окна» молча доставались каждой следующей
+   * карте — вместе с запертыми входными дверями.
+   */
+  const SETTINGS_KEY = 'import-defaults-v2';
+
+  /**
+   * Что из настроек мастера запоминается между импортами — только то, что
+   * зависит от вкуса мастера, а не от карты. Свет и тьма решаются по каждому
+   * файлу заново: у карты со впечённым светом их надо выключать всегда.
+   *
+   * Сохранённое значение пришло из базы мира, поэтому проверяется схемой:
+   * незнакомое или битое поле просто не применяется.
+   */
+  const storedPreferencesSchema = z
+    .object({
+      importObjectWalls: z.boolean(),
+      importPortals: z.boolean(),
+      portalKind: z.enum(['auto', 'door', 'secret-door', 'window']),
+      openAfterImport: z.boolean(),
+    })
+    .partial();
 
   /** Подписи шагов импорта */
   const STAGE_LABELS: Record<ImportStage, string> = {
@@ -57,11 +83,39 @@
     sceneName: '',
     importObjectWalls: true,
     importPortals: true,
-    portalKind: 'door',
+    portalKind: 'auto',
     importLights: true,
     darkScene: true,
     openAfterImport: true,
   });
+
+  /**
+   * Подтягивает запомненные настройки мастера из базы мира.
+   *
+   * Запускается сразу при создании окна, а разбор файла его дожидается:
+   * иначе настройки, пришедшие ПОСЛЕ выбора файла, перезаписали бы решения,
+   * принятые по самому файлу.
+   *
+   * @returns промис, разрешающийся, когда настройки применены (или их нет)
+   */
+  async function restorePreferences(): Promise<void> {
+    try {
+      const stored = await props.api.settings.get(
+        props.moduleId ?? 'map-import',
+        SETTINGS_KEY,
+      );
+
+      const parsed = storedPreferencesSchema.safeParse(stored);
+
+      if (parsed.success) {
+        settings.value = { ...settings.value, ...parsed.data };
+      }
+    } catch {
+      // Настроек ещё нет или их не отдали — работаем со значениями по умолчанию.
+    }
+  }
+
+  const preferencesReady = restorePreferences();
 
   const isGM = computed(() => props.api.scene.isGM());
 
@@ -78,36 +132,27 @@
       && (!needsImageFile.value || Boolean(imageFile.value)),
   );
 
-  /** Сколько стен получится с текущими настройками */
+  /**
+   * Сколько отрезков стен получится с текущими настройками.
+   *
+   * Считается тем же конвертером, что и сам импорт: полилиния карты режется
+   * на отрезки, и их число не равно числу полилиний из сводки.
+   */
   const plannedWallCount = computed(() => {
-    const parsed = summary.value;
+    const parsedMap = map.value;
 
-    if (!parsed) {
+    if (!parsedMap) {
       return 0;
     }
 
-    return (
-      parsed.wallCount
-      + (settings.value.importObjectWalls ? parsed.objectWallCount : 0)
-      + (settings.value.importPortals ? parsed.portalCount : 0)
-    );
-  });
-
-  onMounted(async () => {
-    try {
-      const stored = await props.api.settings.get(
-        props.moduleId ?? 'map-import',
-        SETTINGS_KEY,
-      );
-
-      if (stored && typeof stored === 'object') {
-        settings.value = { ...settings.value, ...stored };
-        // Имя сцены не переносим между импортами: оно всегда своё у карты.
-        settings.value.sceneName = '';
-      }
-    } catch {
-      // Настроек ещё нет или их не отдали — работаем со значениями по умолчанию.
-    }
+    return convertUvtt(parsedMap, {
+      scale: 1,
+      importObjectWalls: settings.value.importObjectWalls,
+      importPortals: settings.value.importPortals,
+      portalKind: settings.value.portalKind,
+      importLights: false,
+      brightRatio: BRIGHT_RATIO,
+    }).walls.length;
   });
 
   /**
@@ -122,20 +167,27 @@
 
     try {
       const parsed = await parseUvttFile(file);
+      const parsedSummary = summarizeUvtt(parsed);
+
+      // Дожидаемся запомненных настроек ДО решений по файлу, иначе пришедшие
+      // позже они перезаписали бы выключенный свет у карты со впечённым светом.
+      await preferencesReady;
 
       map.value = parsed;
-      summary.value = summarizeUvtt(parsed);
+      summary.value = parsedSummary;
       sourceFileName.value = file.name;
 
       if (!settings.value.sceneName) {
         settings.value.sceneName = file.name.replace(/\.[^.]+$/, '');
       }
 
-      // Свет уже впечён в картинку — второй раз его накладывать не нужно.
-      if (summary.value.bakedLighting) {
-        settings.value.importLights = false;
-        settings.value.darkScene = false;
-      }
+      // Свет решается по файлу: впечённый в картинку второй раз не
+      // накладываем, а без огней тёмная сцена была бы просто чёрной.
+      const shouldImportLights =
+        !parsedSummary.bakedLighting && parsedSummary.lightCount > 0;
+
+      settings.value.importLights = shouldImportLights;
+      settings.value.darkScene = shouldImportLights;
     } catch (error) {
       map.value = null;
       summary.value = null;
@@ -224,11 +276,13 @@
           + `${imported.lightCount} источников света`,
       );
 
-      void props.api.settings.set(
-        props.moduleId ?? 'map-import',
-        SETTINGS_KEY,
-        { ...settings.value, sceneName: '' },
-      );
+      // Запоминаем только вкус мастера; имя сцены, свет и тьма — свои у карты.
+      void props.api.settings.set(props.moduleId ?? 'map-import', SETTINGS_KEY, {
+        importObjectWalls: settings.value.importObjectWalls,
+        importPortals: settings.value.importPortals,
+        portalKind: settings.value.portalKind,
+        openAfterImport: settings.value.openAfterImport,
+      });
     } catch (error) {
       importError.value =
         error instanceof Error ? error.message : 'Импорт не удался';
@@ -376,9 +430,10 @@
           v-model="settings.portalKind"
           class="mi-input"
         >
-          <option value="door">Обычные двери</option>
-          <option value="secret-door">Скрытые двери</option>
-          <option value="window">Окна (видно вблизи)</option>
+          <option value="auto">Как в редакторе: закрытые — двери, открытые — окна</option>
+          <option value="door">Все — обычные двери</option>
+          <option value="secret-door">Все — скрытые двери</option>
+          <option value="window">Все — окна (видно вблизи)</option>
         </select>
       </label>
 
@@ -407,7 +462,7 @@
       </label>
 
       <p class="mi-hint">
-        Будет создано линий: {{ plannedWallCount }}. Сцена создаётся скрытой —
+        Будет создано отрезков стен: {{ plannedWallCount }}. Сцена создаётся скрытой —
         покажите её игрокам, когда закончите правки.
       </p>
     </div>

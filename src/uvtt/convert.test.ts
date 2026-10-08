@@ -9,7 +9,7 @@ import type { UvttMap } from './schema';
 
 import { describe, expect, it } from 'vitest';
 
-import { convertUvtt, normalizeColor } from './convert';
+import { convertUvtt, normalizeColor, splitIntoSegments } from './convert';
 
 /** Настройки по умолчанию для тестов: импортируем всё, масштаб 1:1 */
 const baseOptions = {
@@ -111,6 +111,110 @@ describe('convertUvtt: координаты', () => {
   });
 });
 
+describe('convertUvtt: стена — ровно один отрезок', () => {
+  // В VTTG рендер стен и расчёт зрения берут из `points` только первые четыре
+  // числа. Полилиния, отданная одной стеной, рисовалась бы одним отрезком, а
+  // сквозь остальную стену было бы видно и ходить.
+
+  it('режет полилинию из N точек на N − 1 отрезков', () => {
+    const map = makeMap({
+      line_of_sight: [
+        [
+          { x: 3, y: 15 },
+          { x: 3, y: 3 },
+          { x: 10, y: 3 },
+          { x: 10, y: 5 },
+        ],
+      ],
+    });
+
+    const { walls } = convertUvtt(map, baseOptions);
+
+    expect(walls.map((wall) => wall.points)).toEqual([
+      [300, 1500, 300, 300],
+      [300, 300, 1000, 300],
+      [1000, 300, 1000, 500],
+    ]);
+  });
+
+  it('у каждой стены ровно четыре числа', () => {
+    const map = makeMap({
+      line_of_sight: [
+        [
+          { x: 0, y: 0 },
+          { x: 1, y: 0 },
+          { x: 1, y: 1 },
+          { x: 2, y: 1 },
+          { x: 2, y: 3 },
+        ],
+      ],
+      portals: [
+        {
+          position: { x: 5, y: 5 },
+          bounds: [
+            { x: 5, y: 4.5 },
+            { x: 5, y: 5.5 },
+          ],
+          closed: true,
+        },
+      ],
+    });
+
+    const { walls } = convertUvtt(map, baseOptions);
+
+    expect(walls.every((wall) => wall.points.length === 4)).toBe(true);
+  });
+
+  it('открытую ломаную стену не замыкает поперёк комнаты', () => {
+    const map = makeMap({
+      line_of_sight: [
+        [
+          { x: 0, y: 0 },
+          { x: 4, y: 0 },
+          { x: 4, y: 3 },
+        ],
+      ],
+    });
+
+    const { walls } = convertUvtt(map, baseOptions);
+
+    expect(walls).toHaveLength(2);
+    expect(walls.map((wall) => wall.points)).not.toContainEqual([400, 300, 0, 0]);
+  });
+
+  it('почти замкнутый контур объекта замыкает точно, без щели', () => {
+    // Так Dungeondraft отдаёт круглые объекты: последняя точка не доходит
+    // до первой на доли пикселя — в эту щель проскакивал бы луч зрения.
+    const map = makeMap({
+      objects_line_of_sight: [
+        [
+          { x: 1, y: 1 },
+          { x: 2, y: 1 },
+          { x: 2, y: 2 },
+          { x: 1, y: 2 },
+          { x: 1.004, y: 1.006 },
+        ],
+      ],
+    });
+
+    const { walls } = convertUvtt(map, baseOptions);
+    const lastSegment = walls.at(-1)?.points ?? [];
+
+    expect(walls).toHaveLength(4);
+    expect(lastSegment.slice(2)).toEqual([100, 100]);
+  });
+
+  it('отрезок нулевой длины не создаёт', () => {
+    expect(
+      splitIntoSegments([
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+        { x: 50, y: 0 },
+      ]),
+    ).toEqual([[0, 0, 50, 0]]);
+  });
+});
+
 describe('convertUvtt: стены и порталы', () => {
   it('пропускает вырожденные полилинии из одной точки', () => {
     const map = makeMap({
@@ -187,6 +291,42 @@ describe('convertUvtt: стены и порталы', () => {
     expect(walls[0]?.type).toBe('window');
     expect(walls[0]?.vision).toBe('proximity');
     expect(walls[0]?.blocksVision).toBe(false);
+  });
+});
+
+describe('convertUvtt: режим «как в редакторе» для порталов', () => {
+  const map = makeMap({
+    portals: [
+      {
+        position: { x: 9, y: 26 },
+        bounds: [
+          { x: 8, y: 26 },
+          { x: 9, y: 26 },
+        ],
+        closed: true,
+      },
+      {
+        position: { x: 3, y: 16 },
+        bounds: [
+          { x: 3, y: 15.12 },
+          { x: 3, y: 16.5 },
+        ],
+        closed: false,
+      },
+    ],
+  });
+
+  it('закрытый портал делает дверью, открытый — окном', () => {
+    const { walls } = convertUvtt(map, { ...baseOptions, portalKind: 'auto' });
+
+    expect(walls.map((wall) => wall.type)).toEqual(['door', 'window']);
+    expect(walls[0]?.doorState).toBe('closed');
+  });
+
+  it('ручной выбор применяет один тип ко всем порталам', () => {
+    const { walls } = convertUvtt(map, { ...baseOptions, portalKind: 'window' });
+
+    expect(walls.map((wall) => wall.type)).toEqual(['window', 'window']);
   });
 });
 

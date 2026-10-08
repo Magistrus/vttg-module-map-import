@@ -1,7 +1,7 @@
 {
   "id": "map-import",
   "name": "Импорт карт",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Импорт карты из редактора (Dungeondraft, Dungeon Alchemist, Arkenforge — формат Universal VTT): фон, размер клетки, стены, двери, окна и источники света одной сценой мира.",
   "icon": "tabler:map-plus",
   "author": "TTG Club",

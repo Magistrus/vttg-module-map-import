@@ -17,9 +17,6 @@ import { decodeEmbeddedImage } from '@/uvtt/parse';
 /** Папка в мире, куда кладутся фоны импортированных карт */
 const MAPS_FOLDER = 'maps';
 
-/** По сколько стен отправляем за один заход, чтобы не морозить интерфейс */
-const WALL_CHUNK_SIZE = 200;
-
 /** Настройки, которые пользователь задаёт в мастере импорта */
 export interface ImportSettings {
   /** Название будущей сцены */
@@ -79,7 +76,7 @@ export type ImportStage =
 export type ProgressCallback = (stage: ImportStage, progress: number) => void;
 
 /** Доля радиуса, считающаяся ярким светом (как у света, поставленного вручную) */
-const BRIGHT_RATIO = 0.5;
+export const BRIGHT_RATIO = 0.5;
 
 /**
  * Приводит имя файла к безопасному виду для папки мира.
@@ -273,13 +270,17 @@ export async function runImport(
 
   onProgress('walls', 0);
 
-  for (let offset = 0; offset < walls.length; offset += WALL_CHUNK_SIZE) {
-    api.scene.addWalls(scene.id, walls.slice(offset, offset + WALL_CHUNK_SIZE));
-
-    onProgress('walls', Math.min(1, (offset + WALL_CHUNK_SIZE) / walls.length));
-
-    await nextFrame();
+  // Все стены — одним вызовом: хост сам режет их на пачки (одна запись в базу
+  // и одна рассылка на пачку), а один вызов отменяется одним Ctrl+Z. Дробление
+  // здесь превращало бы отмену импорта в серию Ctrl+Z по куску карты за раз.
+  if (walls.length > 0) {
+    api.scene.addWalls(scene.id, walls);
   }
+
+  onProgress('walls', 1);
+
+  // Даём интерфейсу перерисоваться: у большой карты стен тысячи.
+  await nextFrame();
 
   onProgress('lights', 0);
 

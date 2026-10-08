@@ -36,8 +36,24 @@ const WINDOW_PROXIMITY_FT = 30;
 /** Цвет источника света, если редактор не дал разобрать свой */
 const FALLBACK_LIGHT_COLOR = '#FFFFFF';
 
-/** Тип портала, которым импортируются двери карты */
-export type PortalKind = 'door' | 'secret-door' | 'window';
+/**
+ * Насколько близко (в клетках) последняя точка контура должна подойти к
+ * первой, чтобы контур считался замкнутым. Dungeondraft обходит круглые
+ * объекты почти полностью, но не до конца — остаётся зазор в доли пикселя.
+ */
+const CLOSURE_TOLERANCE_CELLS = 0.05;
+
+/** Тип стены, которым становится конкретный портал */
+export type PortalWallType = 'door' | 'secret-door' | 'window';
+
+/**
+ * Чем считать порталы карты.
+ *
+ * `auto` — по состоянию в редакторе: закрытый портал — дверь, открытый — окно.
+ * Universal VTT двери и окна не различает, а Dungeondraft отдаёт окна
+ * открытыми, двери — закрытыми; поэтому это догадка, а не данные формата.
+ */
+export type PortalKind = 'auto' | PortalWallType;
 
 /** Настройки перевода карты в сущности сцены */
 export interface ConvertOptions {
@@ -132,22 +148,102 @@ function createPointMapper(
 }
 
 /**
- * Разворачивает точки в плоский массив координат, который ждёт `Drawing`.
+ * Округляет координату до сотых пикселя — точнее сцене не нужно, а запись в
+ * базе становится короче.
  *
- * @param points - точки полилинии в пикселях сцены
- * @returns массив вида `[x1, y1, x2, y2, …]`
+ * @param value - координата в пикселях сцены
+ * @returns округлённая координата
  */
-function flattenPoints(points: { x: number; y: number }[]): number[] {
-  return points.flatMap((point) => [
-    Math.round(point.x * 100) / 100,
-    Math.round(point.y * 100) / 100,
-  ]);
+function roundCoordinate(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**
- * Собирает обычную стену из полилинии.
+ * Замыкает почти замкнутый контур: последнюю точку, подошедшую к первой ближе
+ * {@link CLOSURE_TOLERANCE_CELLS}, ставит ровно в первую.
  *
- * @param points - плоский массив координат
+ * Иначе между концами контура остаётся щель в доли пикселя, и луч зрения
+ * может в неё проскочить. Открытые ломаные (стены между проёмами) не
+ * трогаются: замкнуть их значило бы провести стену поперёк комнаты.
+ *
+ * @param line - точки полилинии в клетках
+ * @returns та же полилиния, замкнутая точно, если была замкнута почти
+ */
+function snapClosure(line: UvttPoint[]): UvttPoint[] {
+  const first = line[0];
+  const last = line.at(-1);
+
+  if (!first || !last || line.length < 3) {
+    return line;
+  }
+
+  const gap = Math.hypot(first.x - last.x, first.y - last.y);
+
+  if (gap === 0 || gap > CLOSURE_TOLERANCE_CELLS) {
+    return line;
+  }
+
+  return [...line.slice(0, -1), first];
+}
+
+/**
+ * Режет полилинию на отрезки из двух точек.
+ *
+ * В VTTG одна стена — это ровно один отрезок: рендер стен и расчёт зрения
+ * берут из `points` только первые четыре числа. Полилиния из N точек, отданная
+ * одной стеной, рисовалась бы одним первым отрезком, а зрение и движение
+ * перекрывал бы только он — сквозь остальную стену было бы видно и ходить.
+ *
+ * @param points - точки полилинии в пикселях сцены
+ * @returns отрезки вида `[x1, y1, x2, y2]`; вырожденные (нулевой длины) пропущены
+ */
+export function splitIntoSegments(points: { x: number; y: number }[]): number[][] {
+  const segments: number[][] = [];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const start = points[i];
+    const end = points[i + 1];
+
+    if (!start || !end) {
+      continue;
+    }
+
+    const segment = [
+      roundCoordinate(start.x),
+      roundCoordinate(start.y),
+      roundCoordinate(end.x),
+      roundCoordinate(end.y),
+    ];
+
+    const isDegenerate = segment[0] === segment[2] && segment[1] === segment[3];
+
+    if (!isDegenerate) {
+      segments.push(segment);
+    }
+  }
+
+  return segments;
+}
+
+/**
+ * Выбирает тип стены для конкретного портала.
+ *
+ * @param kind - выбор пользователя в мастере
+ * @param closed - был ли портал закрыт в редакторе
+ * @returns тип стены портала
+ */
+function resolvePortalWallType(kind: PortalKind, closed: boolean): PortalWallType {
+  if (kind !== 'auto') {
+    return kind;
+  }
+
+  return closed ? 'door' : 'window';
+}
+
+/**
+ * Собирает обычную стену из отрезка.
+ *
+ * @param points - отрезок `[x1, y1, x2, y2]`
  * @returns стена для сцены
  */
 function buildWall(points: number[]): VttgWallInput {
@@ -169,14 +265,14 @@ function buildWall(points: number[]): VttgWallInput {
  * Окно в VTTG — не «дверь, которую видно насквозь», а стена с проксимити-зрением:
  * сквозь неё видно вблизи. Поэтому набор полей у окна отличается от дверей.
  *
- * @param points - плоский массив координат полотна
- * @param kind - чем считать портал
+ * @param points - отрезок полотна `[x1, y1, x2, y2]`
+ * @param kind - тип стены портала
  * @param closed - был ли портал закрыт на момент экспорта
  * @returns стена-портал для сцены
  */
 function buildPortal(
   points: number[],
-  kind: PortalKind,
+  kind: PortalWallType,
   closed: boolean,
 ): VttgWallInput {
   if (kind === 'window') {
@@ -278,29 +374,25 @@ export function convertUvtt(
     ...(options.importObjectWalls ? (map.objects_line_of_sight ?? []) : []),
   ];
 
+  // Каждая полилиния режется на отрезки: в VTTG стена — ровно один отрезок
+  // (см. `splitIntoSegments`). Полилиния из одной точки даёт ноль отрезков и
+  // пропускается сама собой.
   for (const polyline of wallPolylines) {
-    // Одна точка стеной быть не может: рисовать нечего, а серверу такая запись
-    // всё равно ляжет в базу мусором.
-    if (polyline.length < 2) {
-      continue;
-    }
+    const scenePoints = snapClosure(polyline).map(toScenePoint);
 
-    walls.push(buildWall(flattenPoints(polyline.map(toScenePoint))));
+    for (const segment of splitIntoSegments(scenePoints)) {
+      walls.push(buildWall(segment));
+    }
   }
 
   if (options.importPortals) {
     for (const portal of map.portals ?? []) {
-      if (portal.bounds.length < 2) {
-        continue;
-      }
+      const closed = portal.closed ?? true;
+      const wallType = resolvePortalWallType(options.portalKind, closed);
 
-      walls.push(
-        buildPortal(
-          flattenPoints(portal.bounds.map(toScenePoint)),
-          options.portalKind,
-          portal.closed ?? true,
-        ),
-      );
+      for (const segment of splitIntoSegments(portal.bounds.map(toScenePoint))) {
+        walls.push(buildPortal(segment, wallType, closed));
+      }
     }
   }
 
