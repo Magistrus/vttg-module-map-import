@@ -2,10 +2,22 @@
   "id": "map-import",
   "name": "Импорт карт",
   "version": "0.1.0",
-  "description": "Импорт карт из Dungeondraft и других редакторов, экспортирующих Universal VTT (.dd2vtt / .uvtt): фон, стены, двери, окна и источники света одной сценой.",
+  "description": "Импорт карты из редактора (Dungeondraft, Dungeon Alchemist, Arkenforge — формат Universal VTT): фон, размер клетки, стены, двери, окна и источники света одной сценой мира.",
   "icon": "tabler:map-plus",
   "author": "TTG Club",
-  "permissions": ["scene-write", "assets", "modals", "notifications", "settings"],
+  "manifest": "https://raw.githubusercontent.com/Magistrus/vttg-module-map-import/main/module.json",
+  "download": "https://github.com/Magistrus/vttg-module-map-import/releases/latest/download/map-import.zip",
+  "language": "ru",
+  "compatibility": {
+    "minimum": "0.9.539"
+  },
+  "permissions": [
+    "scene-write",
+    "assets",
+    "modals",
+    "notifications",
+    "settings"
+  ],
   "client": {
     "entry": "client.js",
     "styles": ["styles.css"]
