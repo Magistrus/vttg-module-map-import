@@ -137,7 +137,7 @@ GitHub (`.github/workflows/release.yml`); тег обязан совпадать
 манифеста, и оттуда его скачивает VTTG при установке модуля из каталога.
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.2.1 && git push origin v0.2.1
 ```
 
 ## Тонкости формата
